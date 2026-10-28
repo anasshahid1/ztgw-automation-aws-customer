@@ -45,15 +45,37 @@ resource "local_file" "ztgw_input" {
 resource "null_resource" "ztgw" {
   count = var.deploy_ztgw ? 1 : 0
 
+  # Destroy-time provisioners can only reference self.triggers (not var.*
+  # directly, since variables aren't guaranteed available during destroy),
+  # so everything destroy_ztgw.sh needs is captured here at creation time.
   triggers = {
-    gateway_name = var.gateway_name
-    aws_region   = var.aws_region
+    gateway_name  = var.gateway_name
+    aws_region    = var.aws_region
+    client_id     = var.client_id
+    client_secret = var.client_secret
+    vanity_domain = var.vanity_domain
+    cloud         = var.cloud
+    login_domain  = var.login_domain
   }
 
   depends_on = [local_file.ztgw_input]
 
+  # Create: runs deploy_ztgw.sh, which creates the gateway and polls until
+  # healthy. Because aws_vpc_endpoint.consumer transitively depends on this
+  # resource (via data.local_file.ztgw_output), Terraform destroys the VPC
+  # Endpoints and their routes BEFORE this resource -- so by the time the
+  # destroy provisioner below runs, nothing in AWS still references the
+  # gateway's endpoint service.
   provisioner "local-exec" {
     command = "bash ${path.module}/scripts/deploy_ztgw.sh < ${local_file.ztgw_input[0].filename} > ${path.module}/.ztgw-output.json"
+  }
+
+  # Destroy: deletes the gateway from Zscaler so `terraform destroy` does
+  # the full job in one command, instead of requiring a separate manual
+  # run of scripts/destroy_ztgw.sh afterward.
+  provisioner "local-exec" {
+    when    = destroy
+    command = "TF_VAR_client_id='${self.triggers.client_id}' TF_VAR_client_secret='${self.triggers.client_secret}' TF_VAR_vanity_domain='${self.triggers.vanity_domain}' TF_VAR_cloud='${self.triggers.cloud}' TF_VAR_login_domain='${self.triggers.login_domain}' TF_VAR_gateway_name='${self.triggers.gateway_name}' bash ${path.module}/scripts/destroy_ztgw.sh"
   }
 }
 

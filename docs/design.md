@@ -130,9 +130,11 @@ data.local_file.ztgw_output — depends_on null_resource.ztgw, reads the
 
 If a gateway with the given `gateway_name` already exists and is healthy, `deploy_ztgw.sh` just checks its health and returns — it does **not** update `allowedAccounts`, `accountGroups`, or `additionalAwsAccounts` on an already-existing gateway. These fields are only applied at creation time. To change them on a live gateway today, you must delete and recreate it (which also means redoing the consumer-side VPC Endpoint, since the service name changes).
 
-### Known gap: no destroy-time Zscaler cleanup from pure Terraform
+### Resolved: destroy-time Zscaler cleanup from pure Terraform
 
-`terraform destroy` removes the AWS-side resources (`aws_vpc_endpoint`, `aws_route`) and Terraform's own bookkeeping (`local_file.ztgw_input`, `null_resource.ztgw`), but there is no `provisioner "local-exec" { when = destroy ... }` block wired up to call `scripts/destroy_ztgw.sh`. This means the actual ZT Gateway is **not** deleted from Zscaler by `terraform destroy` alone — you must run `destroy_ztgw.sh` separately (see README → Destroy).
+`null_resource.ztgw` has a second provisioner with `when = destroy` that calls `scripts/destroy_ztgw.sh`, so a single `terraform destroy` now handles the full lifecycle (routes → VPC endpoints → gateway → local bookkeeping files), with no separate manual script run required. See README → Destroy for the exact ordering guarantee and why `triggers` carries the Zscaler credentials/gateway name (destroy-time provisioners can only reference `self.triggers`, not `var.*`, since variables aren't guaranteed available during destroy).
+
+This does extend the existing "secrets in state" tradeoff: `client_secret` now also lives in `triggers`, in addition to `local_file.ztgw_input`'s content. Not a new category of exposure, just the same accepted tradeoff covering destroy as well as create.
 
 ### Known issue: orphaned Location objects
 

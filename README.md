@@ -184,17 +184,17 @@ Configuration is cached in `.zsecrc`. Re-run `./zsec up` to apply with the same 
 ```bash
 terraform destroy -var-file=ztgw-full-deploy.tfvars
 ```
-This removes the AWS-side VPC Endpoint(s) and routes, **but does not delete the ZT Gateway from Zscaler** — there's no destroy-time provisioner wired up yet (`null_resource.ztgw` has no `when = destroy` block). You must delete the gateway separately:
-```bash
-export TF_VAR_client_id="..."
-export TF_VAR_client_secret="..."
-export TF_VAR_vanity_domain="..."
-export TF_VAR_cloud="..."
-export TF_VAR_login_domain="..."
-export TF_VAR_gateway_name="..."
-bash scripts/destroy_ztgw.sh
-```
-Or delete it via the Zscaler Admin Portal. **Important:** deleting a gateway via the UI does not clean up its associated Location object — if you reuse the same `location_name` for a new gateway afterward, creation may fail with `INVALID_INPUT_ARGUMENT: Mentioned location name already exists`. Use a different `location_name` if this happens.
+A single `terraform destroy` now handles the full lifecycle in the correct order:
+1. `aws_route.consumer` — routes removed first
+2. `aws_vpc_endpoint.consumer` — VPC Endpoint(s) removed next (this order is guaranteed by the dependency chain: endpoints reference `data.local_file.ztgw_output`, which `depends_on` `null_resource.ztgw`, so Terraform destroys endpoints before the gateway)
+3. `null_resource.ztgw`'s destroy-time provisioner deletes the actual ZT Gateway from Zscaler via `scripts/destroy_ztgw.sh`
+4. `local_file.ztgw_input` cleaned up last
+
+No manual script invocation needed — the gateway's credentials and name are captured in `triggers` at creation time specifically so they're available to the destroy-time provisioner later (destroy-time provisioners can only reference `self.triggers`, not `var.*` directly).
+
+**Known tradeoff:** this means `client_secret` is also stored in `triggers` (in addition to `local_file.ztgw_input`'s content) — both end up in Terraform state in plaintext. Same accepted tradeoff as the create path, just extended to cover destroy too.
+
+**Important:** deleting a gateway (via this flow, via `destroy_ztgw.sh` directly, or via the Admin UI) does **not** clean up its associated Location object. If you reuse the same `location_name` for a new gateway afterward, creation may fail with `INVALID_INPUT_ARGUMENT: Mentioned location name already exists`. Use a different `location_name` if this happens — this is a Zscaler API gap, not something this repo's code currently works around.
 
 ### Via zsec
 ```bash
